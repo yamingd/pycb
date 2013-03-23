@@ -18,7 +18,7 @@ if sys.platform == 'darwin' and not os.environ.get('ARCHFLAGS'):
 
 
 setup(
-    name='t3couchbase',
+    name='pycb',
     description='Tower3 couchbase library.',
     long_description=(
         '%s\n\n%s' % (
