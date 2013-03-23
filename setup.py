@@ -1,16 +1,24 @@
-try:
-    from setuptools import setup
-except ImportError:
-    from distutils.core import setup
+import os
+import sys
+from distutils.core import setup, Extension
 
 
-requires = [
-    'pylcb'
-]
+pylcb_ext = Extension(
+    'pylcb', ['src/pylcb/pylcb.c'],
+    include_dirs=[
+        '/usr/local/include/libcouchbase',
+        '/usr/include/libcouchbase'
+    ],
+    libraries=['couchbase'],
+)
+
+
+if sys.platform == 'darwin' and not os.environ.get('ARCHFLAGS'):
+    os.environ['ARCHFLAGS'] = '-arch x86_64'
 
 
 setup(
-    name='couchbase',
+    name='t3couchbase',
     description='Tower3 couchbase library.',
     long_description=(
         '%s\n\n%s' % (
@@ -23,9 +31,9 @@ setup(
     author_email='devops@tower3.io',
     url='http://tower3.io',
     license=open('LICENSE').read(),
-    package_dir={'couchbase': 'couchbase'},
+    ext_modules=[pylcb_ext],
+    package_dir={'': 'src'},
     packages=[
-        'couchbase',
-    ],
-    install_requires=requires
+        'pycb',
+    ]
 )
