@@ -2,19 +2,10 @@
 
 ### Dependencies
 
-* libtool
-* libevent
 * libcouchbase
 
 
-### Installation
+Assumes that libcouchbase is installed at :
 
-1. Build libtool from source
-2. Build libevent from source
-3. libtoolize libcouchbase source dir
-4. configure libcouchbase with libevent and libtool
-5. pip install pycb
-
-
-
-
+* /usr/local/include/libcouchbase
+* /usr/include/libcouchbase

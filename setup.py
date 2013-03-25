@@ -28,7 +28,7 @@ setup(
     ),
     version=open('VERSION').read().strip(),
     author='Tower3',
-    author_email='devops@tower3.io',
+    author_email='pycb@tower3.io',
     url='http://tower3.io',
     license=open('LICENSE').read(),
     ext_modules=[pylcb_ext],
