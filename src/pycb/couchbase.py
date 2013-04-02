@@ -1,9 +1,12 @@
 import pylcb
 import urllib
 import json
+import time
 
 # libcouchbase result codes
 LCB_SUCCESS = 0x00
+LCB_ERROR = 0x0a
+LCB_KEY_ENOENT = 0x0d
 
 # libcouchbase create types
 LCB_TYPE_BUCKET = 0x00      # use bucket name
@@ -31,13 +34,12 @@ LCB_HTTP_METHOD_MAX = 4
 
 
 class PycbException(Exception):
-    def __init__(self, text, error):
-        self.text = text
+    def __init__(self, error, errMsg):
+        self.errMsg = errMsg
         self.error = error
 
     def __str__(self):
-        errMsg = pylcb.strerror(self.error)
-        return "%s, errCode:0x%x, errMsg:%s" % (self.text, self.error, errMsg)
+        return "errCode:0x%x, errMsg:%s" % (self.error, self.errMsg)
 
 
 class Couchbase(object):
@@ -47,13 +49,17 @@ class Couchbase(object):
         self.password = password
 
     def bucket(self, bucketName):
-        bucket = Bucket(self.host, self.username, self.password, bucketName)
-
-    def buckets(self):
-        pass
+        return Bucket(self.host, self.username, self.password, bucketName)
 
     def create(self, name, saslPassword='',
                ramQuotaMB=100, replicaNumber=0, **params):
+
+        # special case for memcached
+        memcache = False
+        if 'bucketType' in params:
+            if params['bucketType'] == "memcached":
+                memcache = True
+
         payload = dict(
             saslPassword=saslPassword,
             ramQuotaMB=ramQuotaMB,
@@ -63,14 +69,41 @@ class Couchbase(object):
         payload.update(params)
 
         cluster = Cluster(self.host, self.username, self.password, None)
-        result = cluster.create_bucket(name, **payload)
-        if result['error'] == LCB_SUCCESS:
-            return self.bucket(name)
+        cluster.create_bucket(name, **payload)
 
-        raise PycbException("http error", result['error'])
+        # Bucket was successfully created.  Now wait until it is available.
+        # According to Couchbase documentation:
+        #
+        #   "To ensure a bucket is available the recommended approach
+        #    is try to read a key from the bucket. If you receive a
+        #    'key not found' error, or the document for the key, the
+        #    bucket exists and is available to all nodes in a cluster."
+        #
+        # We wait a maximum of 60 seconds for that level of goodness
+        # to exist.
 
-    def delete(self, bucketName):
-        pass
+        bucket = self.bucket(name)
+        stopTime = time.time() + 60
+        while True:
+            if memcache is True:
+                time.sleep(10)
+
+            try:
+                bucket.get("whatever")
+            except PycbException as e:
+                if e.error == LCB_KEY_ENOENT:
+                    break
+
+            if time.time() > stopTime:
+                errMsg = "newly created bucket did not become " \
+                         "available within 60 seconds"
+                raise PycbException(LCB_ERROR, errMsg)
+
+        return bucket
+
+    def delete(self, name):
+        cluster = Cluster(self.host, self.username, self.password, None)
+        cluster.delete_bucket(name)
 
 
 class Connection(object):
@@ -96,7 +129,16 @@ class Connection(object):
         self.errorResults = []
         pylcb.connect(self.instance)
         pylcb.wait(self.instance)
-        print self.errorResults
+
+        if len(self.errorResults) == 0:
+            return
+
+        # special case error 22
+        lastResult = self.errorResults[len(self.errorResults) - 1]
+        if lastResult['error'] in [LCB_SUCCESS, 22]:
+            return
+
+        raise PycbException(lastResult['error'], lastResult['errinfo'])
 
     def arithmetic_callback(self, cookie, error, key, value):
         self.arithmeticResult = dict(error=error, key=key, value=value)
@@ -105,11 +147,12 @@ class Connection(object):
         self.errorResults.append(dict(error=error, errinfo=errinfo))
 
     def flush_callback(self, cookie, error, server):
-        if server != 0:
+        if server is not None:
             self.flushResults.append(dict(error=error, server=server))
 
-    def get_callback(self, cookie, error, key, document):
-        self.getResult = dict(error=error, key=key, document=document)
+    def get_callback(self, cookie, error, key, bytes, flags):
+        self.getResult = dict(error=error, key=key,
+                              bytes=bytes, flags=flags)
 
     def http_complete_callback(self, cookie, error,
                                status, path, headers, bytes):
@@ -120,7 +163,7 @@ class Connection(object):
         self.removeResult = dict(error=error, key=key)
 
     def stat_callback(self, cookie, error, server, name, stat):
-        if server != 0:
+        if server is not None:
             self.statsResults.append(dict(error=error, server=server,
                                           name=name, stat=stat))
 
@@ -133,7 +176,6 @@ class Cluster(Connection):
         payload.update(dict(name=name))
         body = urllib.urlencode(payload)
 
-        self.httpResult = None
         pylcb.make_http_request(
             self.instance,
             None,
@@ -145,27 +187,64 @@ class Cluster(Connection):
             "application/x-www-form-urlencoded"
         )
         pylcb.wait(self.instance)
-        return self.httpResult
+
+        # raise exception if http request failed
+        if self.httpResult['error'] != LCB_SUCCESS:
+            errMsg = "create bucket, error:%s" % \
+                     pylcb.lcb_strerror(self.httpResult['error'])
+            raise PycbException(self.httpResult['error'], errMsg)
+
+        # raise exception if http request was successful but status
+        # is not 202 (Accepted)
+        if self.httpResult['status'] != 202:
+            errMsg = "create bucket, status:%s, response:%s" % \
+                     (self.httpResult['status'], self.httpResult['bytes'])
+            raise PycbException(self.httpResult['error'], errMsg)
+
+    def delete_bucket(self, name):
+        pylcb.make_http_request(
+            self.instance,
+            None,
+            LCB_HTTP_TYPE_MANAGEMENT,
+            "pools/default/buckets/%s" % name,
+            "",
+            LCB_HTTP_METHOD_DELETE,
+            0,
+            "application/x-www-form-urlencoded"
+        )
+        pylcb.wait(self.instance)
+
+        # raise exception if http request failed
+        if self.httpResult['error'] != LCB_SUCCESS:
+            errMsg = "delete bucket, error:%s" % \
+                     pylcb.lcb_strerror(self.httpResult['error'])
+            raise PycbException(self.httpResult['error'], errMsg)
+
+        # raise exception if http request was successful but status
+        # is not 200 (OK)
+        if self.httpResult['status'] != 200:
+            errMsg = "delete bucket, status:%s, response:%s" % \
+                     (self.httpResult['status'], self.httpResult['bytes'])
+            raise PycbException(self.httpResult['error'], errMsg)
 
 
 class Bucket(Connection):
-    def add(self, key, expiration, flags, value):
-        return self._store(key, expiration, flags, value, LCB_ADD)
+    def add(self, key, exp, flags, val):
+        return self._store(key, exp, flags, val, LCB_ADD)
 
-    def replace(self, key, expiration, flags, value):
-        return self._store(key, expiration, flags, value, LCB_REPLACE)
+    def replace(self, key, exp, flags, val):
+        return self._store(key, exp, flags, val, LCB_REPLACE)
 
     def set(self, key, expiration, flags, value):
         return self._store(key, expiration, flags, value, LCB_SET)
 
-    def append(self, key, expiration, flags, value):
-        return self._store(key, expiration, flags, value, LCB_APPEND)
+    def append(self, key, value):
+        return self._store(key, 0, 0, value, LCB_APPEND)
 
-    def prepend(self, key, expiration, flags, value):
-        return self._store(key, expiration, flags, value, LCB_PREPEND)
+    def prepend(self, key, value):
+        return self._store(key, 0, 0, value, LCB_PREPEND)
 
     def _store(self, key, expiration, flags, value, operation):
-        self.storeResult = None
         pylcb.store(self.instance, self, key,
                     expiration, flags, value, operation)
         pylcb.wait(self.instance)
@@ -173,51 +252,56 @@ class Bucket(Connection):
         result = self.storeResult
         if result['error'] == LCB_SUCCESS:
             return True
-        else:
-            raise PycbException("store error", result['error'])
+
+        errMsg = "error storing key, %s" % pylcb.strerror(result['error'])
+        raise PycbException(result['error'], errMsg)
 
     def get(self, key):
-        self.getResult = None
         pylcb.get(self.instance, self, key)
         pylcb.wait(self.instance)
 
         result = self.getResult
         if result['error'] == LCB_SUCCESS:
-            return True
-        else:
-            raise PycbException("get error", result['error'])
+            # for compatibility with old couchbase python client,
+            # do an integer conversion to strings made up only of numeric
+            # digits
+            bytes = result['bytes']
+            if bytes.isdigit():
+                bytes = int(bytes)
+
+            return result['flags'], 0, bytes
+
+        errMsg = "error retrieving key, %s" % pylcb.strerror(result['error'])
+        raise PycbException(result['error'], errMsg)
 
     def delete(self, key, cas=0):
-        if key.startswith('_design/'):
-            # this is a design doc, we need to handle it differently
-            pass
-        else:
-            self.removeResult = None
-            pylcb.remove(self.instance, self, key)
-            pylcb.wait(self.instance)
+        pylcb.remove(self.instance, self, key)
+        pylcb.wait(self.instance)
 
-            result = self.removeResult
-            if result['error'] == LCB_SUCCESS:
-                return True
-            else:
-                raise PycbException("delete error", result['error'])
+        result = self.removeResult
+        if result['error'] == LCB_SUCCESS:
+            return True
 
-    def incr(self, key, delta=1, initial=0, expiration=0):
-        return self._arithmetic(key, delta, initial, expiration)
+        errMsg = "error deleting key, %s" % pylcb.strerror(result['error'])
+        raise PycbException(result['error'], errMsg)
 
-    def decr(self, key, delta=1, initial=0, expiration=0):
-        return self._arithmetic(key, -delta, initial, expiration)
+    def incr(self, key, amt=1, init=0, exp=0):
+        return self._arithmetic(key, amt, init, exp)
+
+    def decr(self, key, amt=1, init=0, exp=0):
+        return self._arithmetic(key, -amt, init, exp)
 
     def _arithmetic(self, key, delta, initial, expiration):
-        self.arithmeticResult = None
         pylcb.arithmetic(self.instance, self, key, delta, initial, expiration)
         pylcb.wait(self.instance)
 
         result = self.arithmeticResult
         if result['error'] == LCB_SUCCESS:
-            return True
-        else:
-            raise PycbException("increment/decrement error", result['error'])
+            return result['value']
+
+        errMsg = "error incrementing/decrementing key, %s" \
+                 % pylcb.strerror(result['error'])
+        raise PycbException(result['error'], errMsg)
 
     def stats(self, name=""):
         self.statsResults = []
@@ -240,9 +324,10 @@ class Bucket(Connection):
                 value = json.dumps(params[param])
                 params[param] = value
 
-        path = "%s?%s" % (view, urllib.urlencode(params))
+        path = view
+        if len(params) > 0:
+            path += "?%s" % urllib.urlencode(params)
 
-        self.httpResult = None
         pylcb.make_http_request(
             self.instance,
             None,
@@ -255,10 +340,19 @@ class Bucket(Connection):
         )
         pylcb.wait(self.instance)
 
-        result = self.httpResult
-        if result['error'] == LCB_SUCCESS:
-            response = json.loads(result['bytes'])
-            if 'rows' in response:
-                return response['rows']
+        # raise exception if http request failed
+        if self.httpResult['error'] != LCB_SUCCESS:
+            errMsg = "get view, error:%s" % \
+                     pylcb.lcb_strerror(self.httpResult['error'])
+            raise PycbException(self.httpResult['error'], errMsg)
 
-        raise PycbException("view error", result['error'])
+        # raise exception if http request was successful but status
+        # is not 200 or 201
+        if self.httpResult['status'] not in [200, 201]:
+            errMsg = "get view, status:%s, response:%s" % \
+                     (self.httpResult['status'], self.httpResult['bytes'])
+            raise PycbException(self.httpResult['error'], errMsg)
+
+        response = json.loads(self.httpResult['bytes'])
+        if 'rows' in response:
+            return response['rows']

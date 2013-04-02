@@ -1,1 +1,1 @@
-from .couchbase import Couchbase
+from .couchbase import Couchbase, PycbException

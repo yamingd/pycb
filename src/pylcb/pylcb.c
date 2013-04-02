@@ -37,6 +37,18 @@ struct callbacks_node {
 static struct callbacks_node *callbacksRoot = NULL;
 
 
+static void
+print_callbacks_node_list()
+{
+    struct callbacks_node *node;
+
+    node = callbacksRoot;
+    while (node) {
+        node = node->next;
+    }
+}
+
+
 static struct callbacks_node *
 add_callbacks_node(lcb_t instance)
 {
@@ -55,6 +67,7 @@ add_callbacks_node(lcb_t instance)
         newNode->next = callbacksRoot;
         callbacksRoot = newNode;
     }
+    print_callbacks_node_list();
     return newNode;
 }
 
@@ -304,9 +317,10 @@ get_callback(lcb_t instance, const void *cookie,
     node = find_callbacks_node(instance);
     if (node) {
         if (node->callbacks.get_callback) {
-            arglist = Py_BuildValue("Ois#s#", cookie, error,
+            arglist = Py_BuildValue("Ois#s#i", cookie, error,
                                     resp->v.v0.key, resp->v.v0.nkey, 
-                                    resp->v.v0.bytes, resp->v.v0.nbytes);
+                                    resp->v.v0.bytes, resp->v.v0.nbytes,
+                                    resp->v.v0.flags);
             return do_callback(node->callbacks.get_callback, arglist);
         }
     }
@@ -505,8 +519,10 @@ lcb_instance_destructor(PyObject *capsule) {
     lcb_t *instancePtr;
 
     instancePtr = PyCapsule_GetPointer(capsule, "lcb_instance");
-    lcb_destroy(*instancePtr);
+    fprintf(stdout, "destroying instance %p\n", *instancePtr);
     remove_callbacks_node(*instancePtr);
+    print_callbacks_node_list();
+    lcb_destroy(*instancePtr);
     free(instancePtr);
 }
 
@@ -822,7 +838,7 @@ pylcb_stats(PyObject *self, PyObject *args) {
     cmd.v.v0.name = name;
     cmd.v.v0.nname = strlen(name);
     commands[0] = &cmd;
-    
+
     err = lcb_server_stats(*instancePtr, cookie, 1, commands);
     if (err != LCB_SUCCESS) {
         snprintf(errMsg, 256, "Failed to get stats: %s\n",

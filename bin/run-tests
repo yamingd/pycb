@@ -1,0 +1,21 @@
+#!/bin/bash
+
+function remove_pyc {
+    find ./ -name '*.pyc' -exec rm {} \;
+}
+
+function run_tests {
+    remove_pyc
+    nosetests tests.py --process-restartworker --stop -v \
+    --nocapture \
+    --with-coverage \
+    --cover-package=pycb
+}
+
+function main {
+    time run_tests
+}
+
+echo "Running all tests"
+main
+rm .coverage
