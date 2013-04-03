@@ -191,7 +191,7 @@ class Cluster(Connection):
         # raise exception if http request failed
         if self.httpResult['error'] != LCB_SUCCESS:
             errMsg = "create bucket, error:%s" % \
-                     pylcb.lcb_strerror(self.httpResult['error'])
+                     pylcb.pylcb_strerror(self.httpResult['error'])
             raise PycbException(self.httpResult['error'], errMsg)
 
         # raise exception if http request was successful but status
@@ -217,7 +217,7 @@ class Cluster(Connection):
         # raise exception if http request failed
         if self.httpResult['error'] != LCB_SUCCESS:
             errMsg = "delete bucket, error:%s" % \
-                     pylcb.lcb_strerror(self.httpResult['error'])
+                     pylcb.pylcb_strerror(self.httpResult['error'])
             raise PycbException(self.httpResult['error'], errMsg)
 
         # raise exception if http request was successful but status
@@ -245,11 +245,16 @@ class Bucket(Connection):
         return self._store(key, 0, 0, value, LCB_PREPEND)
 
     def _store(self, key, expiration, flags, value, operation):
+        self.storeResult = None
         pylcb.store(self.instance, self, key,
                     expiration, flags, value, operation)
         pylcb.wait(self.instance)
 
         result = self.storeResult
+        if result is None:
+            errMsg = "did not get store_callback"
+            raise PycbException(LCB_ERROR, errMsg)
+
         if result['error'] == LCB_SUCCESS:
             return True
 
@@ -257,10 +262,15 @@ class Bucket(Connection):
         raise PycbException(result['error'], errMsg)
 
     def get(self, key):
+        self.getResult = None
         pylcb.get(self.instance, self, key)
         pylcb.wait(self.instance)
 
         result = self.getResult
+        if result is None:
+            errMsg = "did not get get_callback"
+            raise PycbException(LCB_ERROR, errMsg)
+
         if result['error'] == LCB_SUCCESS:
             # for compatibility with old couchbase python client,
             # do an integer conversion to strings made up only of numeric
@@ -275,10 +285,15 @@ class Bucket(Connection):
         raise PycbException(result['error'], errMsg)
 
     def delete(self, key, cas=0):
+        self.removeResult = None
         pylcb.remove(self.instance, self, key)
         pylcb.wait(self.instance)
 
         result = self.removeResult
+        if result is None:
+            errMsg = "did not get remove_callback"
+            raise PycbException(LCB_ERROR, errMsg)
+
         if result['error'] == LCB_SUCCESS:
             return True
 
@@ -292,10 +307,15 @@ class Bucket(Connection):
         return self._arithmetic(key, -amt, init, exp)
 
     def _arithmetic(self, key, delta, initial, expiration):
+        self.arithmeticResult = None
         pylcb.arithmetic(self.instance, self, key, delta, initial, expiration)
         pylcb.wait(self.instance)
 
         result = self.arithmeticResult
+        if result is None:
+            errMsg = "did not get arithmetic_callback"
+            raise PycbException(LCB_ERROR, errMsg)
+
         if result['error'] == LCB_SUCCESS:
             return result['value']
 
@@ -343,7 +363,7 @@ class Bucket(Connection):
         # raise exception if http request failed
         if self.httpResult['error'] != LCB_SUCCESS:
             errMsg = "get view, error:%s" % \
-                     pylcb.lcb_strerror(self.httpResult['error'])
+                     pylcb.pylcb_strerror(self.httpResult['error'])
             raise PycbException(self.httpResult['error'], errMsg)
 
         # raise exception if http request was successful but status

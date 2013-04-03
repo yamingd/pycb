@@ -546,6 +546,7 @@ pylcb_create(PyObject *self, PyObject *args) {
         return NULL;
 
     io_opts.version = 0;
+    // io_opts.v.v0.type = LCB_IO_OPS_DEFAULT;
     io_opts.v.v0.type = LCB_IO_OPS_DEFAULT;
     io_opts.v.v0.cookie = NULL;
 
@@ -553,7 +554,7 @@ pylcb_create(PyObject *self, PyObject *args) {
     create_options.version = 1;
     err = lcb_create_io_ops(&create_options.v.v1.io, &io_opts);
     if (err != LCB_SUCCESS) {
-        snprintf(errMsg, 256, "Failed to create IO instance: %s\n",
+        snprintf(errMsg, 256, "pylcb, failed to create IO instance: %s\n",
                  lcb_strerror(NULL, err));
         PyErr_SetString(PyExc_IOError, errMsg);
         return NULL;
@@ -575,7 +576,7 @@ pylcb_create(PyObject *self, PyObject *args) {
     err = lcb_create(instancePtr, &create_options);
     if (err != LCB_SUCCESS) {
         free(instancePtr);
-        snprintf(errMsg, 256, "Failed to create libcouchbase instance: %s\n",
+        snprintf(errMsg, 256, "pylcb, failed to create libcouchbase instance: %s\n",
                  lcb_strerror(NULL, err));
         PyErr_SetString(PyExc_IOError, errMsg);
     }
@@ -609,7 +610,7 @@ pylcb_connect(PyObject *self, PyObject *args) {
 
     /* Initiate the connect sequence in libcouchbase */
     if ((err = lcb_connect(*instancePtr)) != LCB_SUCCESS) {
-        snprintf(errMsg, 256, "Failed to initiate connect: %s\n",
+        snprintf(errMsg, 256, "pylcb, failed to initiate connect: %s\n",
                  lcb_strerror(NULL, err));
         PyErr_SetString(PyExc_IOError, errMsg);
         lcb_destroy(*instancePtr);
@@ -654,7 +655,7 @@ pylcb_arithmetic(PyObject *self, PyObject *args) {
     
     err = lcb_arithmetic(*instancePtr, cookie, 1, commands);
     if (err != LCB_SUCCESS) {
-        snprintf(errMsg, 256, "Failed to do arithmetic: %s\n",
+        snprintf(errMsg, 256, "pylcb, failed to initiate arithmetic: %s\n",
                  lcb_strerror(NULL, err));
         PyErr_SetString(PyExc_IOError, errMsg);
         return NULL;
@@ -687,7 +688,7 @@ pylcb_flush(PyObject *self, PyObject *args) {
     
     err = lcb_flush(*instancePtr, cookie, 1, commands);
     if (err != LCB_SUCCESS) {
-        snprintf(errMsg, 256, "Failed to initiate flush: %s\n",
+        snprintf(errMsg, 256, "pylcb, failed to initiate flush: %s\n",
                  lcb_strerror(NULL, err));
         PyErr_SetString(PyExc_IOError, errMsg);
         return NULL;
@@ -723,7 +724,7 @@ pylcb_get(PyObject *self, PyObject *args) {
 
     err = lcb_get(*instancePtr, cookie, 1, commands);
     if (err != LCB_SUCCESS) {
-        snprintf(errMsg, 256, "Failed to get: %s\n",
+        snprintf(errMsg, 256, "pylcb, failed to initiate get: %s\n",
                  lcb_strerror(NULL, err));
         PyErr_SetString(PyExc_IOError, errMsg);
         return NULL;
@@ -769,7 +770,7 @@ pylcb_make_http_request(PyObject *self, PyObject *args) {
 
     err = lcb_make_http_request(*instancePtr, cookie, type, &cmd, &req);
     if (err != LCB_SUCCESS) {
-        snprintf(errMsg, 256, "Failed to make http request: %s\n",
+        snprintf(errMsg, 256, "pylcb, failed to make http request: %s\n",
                  lcb_strerror(NULL, err));
         PyErr_SetString(PyExc_IOError, errMsg);
         return NULL;
@@ -805,7 +806,7 @@ pylcb_remove(PyObject *self, PyObject *args) {
     
     err = lcb_remove(*instancePtr, cookie, 1, commands);
     if (err != LCB_SUCCESS) {
-        snprintf(errMsg, 256, "Failed to remove: %s\n",
+        snprintf(errMsg, 256, "pylcb, failed to remove: %s\n",
                  lcb_strerror(NULL, err));
         PyErr_SetString(PyExc_IOError, errMsg);
         return NULL;
@@ -841,7 +842,7 @@ pylcb_stats(PyObject *self, PyObject *args) {
 
     err = lcb_server_stats(*instancePtr, cookie, 1, commands);
     if (err != LCB_SUCCESS) {
-        snprintf(errMsg, 256, "Failed to get stats: %s\n",
+        snprintf(errMsg, 256, "pylcb, failed to get stats: %s\n",
                  lcb_strerror(NULL, err));
         PyErr_SetString(PyExc_IOError, errMsg);
         return NULL;
@@ -887,7 +888,7 @@ pylcb_store(PyObject *self, PyObject *args) {
     
     err = lcb_store(*instancePtr, cookie, 1, commands);
     if (err != LCB_SUCCESS) {
-        snprintf(errMsg, 256, "Failed to store: %s\n",
+        snprintf(errMsg, 256, "pylcb, failed to store: %s\n",
                  lcb_strerror(NULL, err));
         PyErr_SetString(PyExc_IOError, errMsg);
         return NULL;
