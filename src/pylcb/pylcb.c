@@ -3,6 +3,44 @@
 #include <string.h>
 #include <stdlib.h>
 #include <libcouchbase/couchbase.h>
+#include <event.h>
+
+
+/* ---------------------------------------------------
+    Create a libevent event base that can be passed
+    to lcb_create.
+    
+    This should be a temporary hack until we can
+    build a tornado ioloop plugin
+   ---------------------------------------------------*/
+
+static PyObject *
+pylcb_create_event_base(PyObject *self, PyObject *args) {
+    struct event_base *evbase;
+
+    evbase = event_base_new();
+    return PyCapsule_New(evbase, "event_base", NULL);
+}
+
+static PyObject *
+pylcb_run_event_loop_nonblock(PyObject *self, PyObject *args) {
+    PyObject *capsule;
+    struct event_base *evbase;
+
+    if (!PyArg_ParseTuple(args, "O", &capsule)) {
+        return NULL;
+    }
+    evbase = PyCapsule_GetPointer(capsule, "event_base");
+    event_base_loop(evbase, 2);
+
+    Py_INCREF(Py_None);
+    return Py_None;
+}
+
+/* -------------------------------------------------
+    end temporary hack awaiting tornado ioloop
+    plugin
+   ------------------------------------------------- */
 
 
 /* ----------------------------------------------------------
@@ -191,6 +229,47 @@ arithmetic_callback(lcb_t instance,
             arglist = Py_BuildValue("Ois#l", cookie, error, resp->v.v0.key,
                                     resp->v.v0.nkey, resp->v.v0.value);
             return do_callback(node->callbacks.arithmetic_callback, arglist);
+        }
+    }
+}
+
+
+/* ----------------------------------------
+     configuration callback
+   ---------------------------------------- */
+static PyObject *
+pylcb_set_configuration_callback(PyObject *self, PyObject *args)
+{
+    PyObject *capsule;
+    PyObject *callback;
+    lcb_t *instancePtr;
+    struct callbacks_node *node;
+
+    if (!PyArg_ParseTuple(args, "OO", &capsule, &callback)) {
+        return NULL;
+    }
+    instancePtr = PyCapsule_GetPointer(capsule, "lcb_instance");
+
+    node = find_callbacks_node(*instancePtr);
+    if (!node) {
+        return NULL;
+    }
+
+    return set_callback(callback, &(node->callbacks.configuration_callback));
+}
+
+
+static void
+configuration_callback(lcb_t instance, lcb_configuration_t config)
+{
+    PyObject *arglist;
+    struct callbacks_node *node;
+
+    node = find_callbacks_node(instance);
+    if (node) {
+        if (node->callbacks.configuration_callback) {
+            arglist = Py_BuildValue("(i)", config);
+            return do_callback(node->callbacks.configuration_callback, arglist);
         }
     }
 }
@@ -529,26 +608,28 @@ lcb_instance_destructor(PyObject *capsule) {
 
 static PyObject *
 pylcb_create(PyObject *self, PyObject *args) {
+    PyObject *capsule;
     char *host = NULL;
     char *user = NULL;
     char *passwd = NULL;
     char *bucket = NULL;
     int type = LCB_TYPE_BUCKET;
 
+    struct event_base *evbase;
     struct lcb_create_st create_options;
     struct lcb_create_io_ops_st io_opts;
 
     lcb_error_t err;
     char errMsg[256];
 
-    if (!PyArg_ParseTuple(args, "|ssssi", &host, &user,
+    if (!PyArg_ParseTuple(args, "O|ssssi", &capsule, &host, &user,
                           &passwd, &bucket, &type))
         return NULL;
 
+    evbase = PyCapsule_GetPointer(capsule, "event_base");
     io_opts.version = 0;
-    // io_opts.v.v0.type = LCB_IO_OPS_DEFAULT;
-    io_opts.v.v0.type = LCB_IO_OPS_DEFAULT;
-    io_opts.v.v0.cookie = NULL;
+    io_opts.v.v0.type = LCB_IO_OPS_LIBEVENT;
+    io_opts.v.v0.cookie = evbase;
 
     memset(&create_options, 0, sizeof(create_options));
     create_options.version = 1;
@@ -585,6 +666,7 @@ pylcb_create(PyObject *self, PyObject *args) {
 
     lcb_set_error_callback(*instancePtr, (lcb_error_callback) error_callback);
     lcb_set_arithmetic_callback(*instancePtr, (lcb_arithmetic_callback) arithmetic_callback);
+    lcb_set_configuration_callback(*instancePtr, (lcb_configuration_callback) configuration_callback);
     lcb_set_get_callback(*instancePtr, (lcb_get_callback) get_callback);
     lcb_set_flush_callback(*instancePtr, (lcb_flush_callback) flush_callback);
     lcb_set_http_complete_callback(*instancePtr, (lcb_http_complete_callback) http_complete_callback);
@@ -926,6 +1008,35 @@ pylcb_wait(PyObject *self, PyObject *args) {
 }
 
 
+static PyObject *
+pylcb_get_timeout(PyObject *self, PyObject *args) {
+    PyObject *capsule;
+    lcb_t *instancePtr;
+
+    if (!PyArg_ParseTuple(args, "O", &capsule))
+        return NULL;
+    instancePtr = PyCapsule_GetPointer(capsule, "lcb_instance");
+
+    return Py_BuildValue("i", lcb_get_timeout(*instancePtr));
+}
+
+
+static PyObject *
+pylcb_set_timeout(PyObject *self, PyObject *args) {
+    PyObject *capsule;
+    int timeout;
+    lcb_t *instancePtr;
+
+    if (!PyArg_ParseTuple(args, "Oi", &capsule, &timeout))
+        return NULL;
+    instancePtr = PyCapsule_GetPointer(capsule, "lcb_instance");
+
+    lcb_set_timeout(*instancePtr, (lcb_uint32_t) timeout);
+
+    Py_INCREF(Py_None);
+    return Py_None;
+}
+
 static PyMethodDef
 LcbMethods[] = {
     { "create", pylcb_create, METH_VARARGS,
@@ -950,8 +1061,18 @@ LcbMethods[] = {
       "Return the string representation of an error" },
     { "wait", pylcb_wait, METH_VARARGS,
       "wait for couchbase call to complete" },
+    { "create_event_base", pylcb_create_event_base, METH_VARARGS,
+      "creates a libevent event base" },
+    { "run_event_loop_nonblock", pylcb_run_event_loop_nonblock, METH_VARARGS,
+      "run libevent event loop nonblocking" },
+    { "get_timeout", pylcb_get_timeout, METH_VARARGS,
+      "get libcouchbase operation timeout" },
+    { "set_timeout", pylcb_set_timeout, METH_VARARGS,
+      "set libcouchbase operation timeout" },
     { "set_arithmetic_callback", pylcb_set_arithmetic_callback, METH_VARARGS,
       "Set callback for lcb_arithmetic"},
+    { "set_configuration_callback", pylcb_set_configuration_callback, METH_VARARGS,
+      "Set callback for lcb_configuration"},
     { "set_error_callback", pylcb_set_error_callback, METH_VARARGS,
       "Set callback for errors"},
     { "set_flush_callback", pylcb_set_flush_callback, METH_VARARGS,

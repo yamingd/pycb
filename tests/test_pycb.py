@@ -1,4 +1,4 @@
-from pycb import Couchbase, PycbException
+import pycb
 import unittest
 import requests
 import json
@@ -17,7 +17,7 @@ def bucket_list():
 class TestPycb(unittest.TestCase):
     @classmethod
     def setUpClass(self):
-        self.cb = Couchbase("localhost", "Administrator", "password")
+        self.cb = pycb.Couchbase("localhost", "Administrator", "password")
         self.testBucket = self.cb.create("test")
 
     @classmethod
@@ -25,8 +25,8 @@ class TestPycb(unittest.TestCase):
         self.cb.delete("test")
 
     def test_bad_connection_params(self):
-        cb = Couchbase("localhost", "Administrator", "passweird")
-        with self.assertRaises(PycbException):
+        cb = pycb.Couchbase("localhost", "Administrator", "passweird")
+        with self.assertRaises(pycb.PycbException):
             self.testBucket = cb.bucket("test")
 
     def test_create_and_delete_buckets(self):
@@ -56,7 +56,7 @@ class TestPycb(unittest.TestCase):
             name = bucketDef['name']
             params = bucketDef['params']
             if bucketDef['shouldFail'] is True:
-                with self.assertRaises(PycbException):
+                with self.assertRaises(pycb.PycbException):
                     self.cb.create(name, **params)
             else:
                 self.cb.create(name, **params)
@@ -67,13 +67,27 @@ class TestPycb(unittest.TestCase):
                 self.cb.delete(bucketDef['name'])
                 self.assertNotIn(bucketDef['name'], bucket_list())
 
-        with self.assertRaises(PycbException):
+        with self.assertRaises(pycb.PycbException):
             self.cb.delete("nonexistentBucket")
 
     def test_exception_string(self):
         try:
-            raise PycbException(10, "it broke")
-        except PycbException as e:
+            raise pycb.PycbException(10, "it broke")
+        except pycb.PycbException as e:
+            self.assertEqual(e.error, 10)
+            self.assertEqual(e.errMsg, "it broke")
+            self.assertIn("it broke", e.__str__())
+
+        try:
+            raise pycb.PycbKeyNotFound(10, "it broke")
+        except pycb.PycbKeyNotFound as e:
+            self.assertEqual(e.error, 10)
+            self.assertEqual(e.errMsg, "it broke")
+            self.assertIn("it broke", e.__str__())
+
+        try:
+            raise pycb.PycbKeyExists(10, "it broke")
+        except pycb.PycbKeyExists as e:
             self.assertEqual(e.error, 10)
             self.assertEqual(e.errMsg, "it broke")
             self.assertIn("it broke", e.__str__())
@@ -106,7 +120,7 @@ class TestPycb(unittest.TestCase):
         rows = self.testBucket.view("_design/dev_test/_view/test", **params)
         self.assertTrue(len(rows) >= 3)
 
-        with self.assertRaises(PycbException):
+        with self.assertRaises(pycb.PycbException):
             self.testBucket.view("not_a_design_document")
 
     def test_set(self):
@@ -119,11 +133,11 @@ class TestPycb(unittest.TestCase):
         data = self.testBucket.get("addTestKey")[2]
         self.assertEqual(data, '{"data": "adddata"}')
 
-        with self.assertRaises(PycbException):
+        with self.assertRaises(pycb.PycbKeyExists):
             self.testBucket.add("addTestKey", 0, 0, '{"data": "adddata"}')
 
     def test_replace(self):
-        with self.assertRaises(PycbException):
+        with self.assertRaises(pycb.PycbKeyNotFound):
             self.testBucket.replace("replaceTestKey", 0, 0,
                                     '{"data": "replacedata"}')
 
@@ -154,9 +168,9 @@ class TestPycb(unittest.TestCase):
     def test_delete(self):
         self.testBucket.set("deleteTestKey", 0, 0, '{"data": "deleteData"}')
         self.testBucket.delete("deleteTestKey")
-        with self.assertRaises(PycbException):
+        with self.assertRaises(pycb.PycbKeyNotFound):
             self.testBucket.get("deleteTestKey")[2]
-        with self.assertRaises(PycbException):
+        with self.assertRaises(pycb.PycbKeyNotFound):
             self.testBucket.delete("deleteTestKey")
 
     def test_increment_and_decrement(self):
@@ -167,7 +181,7 @@ class TestPycb(unittest.TestCase):
         self.testBucket.decr("countKey")
         self.assertEqual(self.testBucket.get("countKey")[2], 2)
         self.testBucket.set("countKey", 0, 0, "non-numeric")
-        with self.assertRaises(PycbException):
+        with self.assertRaises(pycb.PycbException):
             self.testBucket.incr("countKey")
 
     def test_stats(self):
@@ -179,6 +193,25 @@ class TestPycb(unittest.TestCase):
         results = self.testBucket.flush()
         self.assertIsInstance(results, list)
         self.assertTrue(len(results) >= 1)
+
+    def test_memcached_bucket(self):
+        params = dict(bucketType="memcached")
+        memcacheBucket = self.cb.create("memcacheBucket", **params)
+        self.assertIn("memcacheBucket", bucket_list())
+        memcacheBucket.add("addTestKey", 0, 0, '{"data": "adddata"}')
+        data = memcacheBucket.get("addTestKey")[2]
+        self.assertEqual(data, '{"data": "adddata"}')
+        self.cb.delete("memcacheBucket")
+
+    def test_connect_with_timeout(self):
+        bucket = self.cb.bucket("test", timeout=10)
+        bucket.set("getTestKey", 0, 0, '{"data": "getData"}')
+        data = bucket.get("getTestKey")[2]
+        self.assertEqual(data, '{"data": "getData"}')
+
+        cb = pycb.Couchbase("127.0.0.2", "Administrator", "password")
+        with self.assertRaises(pycb.PycbException):
+            bucket = cb.bucket("test", timeout=2)
 
 if __name__ == '__main__':
     unittest.main()

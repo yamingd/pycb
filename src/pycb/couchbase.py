@@ -6,7 +6,9 @@ import time
 # libcouchbase result codes
 LCB_SUCCESS = 0x00
 LCB_ERROR = 0x0a
+LCB_KEY_EEXISTS = 0x0c
 LCB_KEY_ENOENT = 0x0d
+LCB_ETIMEDOUT = 0x17
 
 # libcouchbase create types
 LCB_TYPE_BUCKET = 0x00      # use bucket name
@@ -18,6 +20,11 @@ LCB_REPLACE = 0x02
 LCB_SET = 0x03
 LCB_APPEND = 0x04
 LCB_PREPEND = 0x05
+
+# libcouchbase configuration callback types
+LCB_CONFIGURATION_NEW = 0x00,
+LCB_CONFIGURATION_CHANGED = 0x01,
+LCB_CONFIGURATION_UNCHANGED = 0x02
 
 # libcouchbase make_http_request types
 LCB_HTTP_TYPE_VIEW = 0
@@ -42,14 +49,25 @@ class PycbException(Exception):
         return "errCode:0x%x, errMsg:%s" % (self.error, self.errMsg)
 
 
+class PycbKeyNotFound(PycbException):
+    pass
+
+
+class PycbKeyExists(PycbException):
+    pass
+
+
 class Couchbase(object):
     def __init__(self, host, username, password):
         self.host = host
         self.username = username
         self.password = password
 
-    def bucket(self, bucketName):
-        return Bucket(self.host, self.username, self.password, bucketName)
+    def bucket(self, bucketName, timeout=None):
+        bucket = Bucket(self.host, self.username, self.password,
+                        bucketName, timeout)
+        # bucket.connect()
+        return bucket
 
     def create(self, name, saslPassword='',
                ramQuotaMB=100, replicaNumber=0, **params):
@@ -68,7 +86,9 @@ class Couchbase(object):
         )
         payload.update(params)
 
-        cluster = Cluster(self.host, self.username, self.password, None)
+        cluster = Cluster(self.host, self.username, self.password,
+                          None, None)
+        # cluster.connect()
         cluster.create_bucket(name, **payload)
 
         # Bucket was successfully created.  Now wait until it is available.
@@ -102,21 +122,27 @@ class Couchbase(object):
         return bucket
 
     def delete(self, name):
-        cluster = Cluster(self.host, self.username, self.password, None)
+        cluster = Cluster(self.host, self.username, self.password,
+                          None, None)
+        # cluster.connect()
         cluster.delete_bucket(name)
 
 
 class Connection(object):
-    def __init__(self, host, username, password, bucketName):
+    def __init__(self, host, username, password, bucketName, timeout):
+        self.timeout = timeout
         if bucketName is None:
             connectionType = LCB_TYPE_CLUSTER
             bucketName = ""
         else:
             connectionType = LCB_TYPE_BUCKET
-        self.instance = pylcb.create(host, username, password,
+        self.evbase = pylcb.create_event_base()
+        self.instance = pylcb.create(self.evbase, host, username, password,
                                      bucketName, connectionType)
 
         pylcb.set_arithmetic_callback(self.instance, self.arithmetic_callback)
+        pylcb.set_configuration_callback(self.instance,
+                                         self.configuration_callback)
         pylcb.set_error_callback(self.instance, self.error_callback)
         pylcb.set_flush_callback(self.instance, self.flush_callback)
         pylcb.set_get_callback(self.instance, self.get_callback)
@@ -126,9 +152,19 @@ class Connection(object):
         pylcb.set_stat_callback(self.instance, self.stat_callback)
         pylcb.set_store_callback(self.instance, self.store_callback)
 
+        self.connecting = True
         self.errorResults = []
         pylcb.connect(self.instance)
-        pylcb.wait(self.instance)
+
+        if self.timeout:
+            self.expireTime = time.time() + self.timeout
+            while self.connecting:
+                pylcb.run_event_loop_nonblock(self.evbase)
+                if time.time() > self.expireTime:
+                    raise PycbException(LCB_ETIMEDOUT,
+                                        "connect attempt timed out")
+        else:
+            pylcb.wait(self.instance)
 
         if len(self.errorResults) == 0:
             return
@@ -140,11 +176,21 @@ class Connection(object):
 
         raise PycbException(lastResult['error'], lastResult['errinfo'])
 
+    def get_timeout(self):
+        return pylcb.get_timeout(self.instance)
+
+    def set_timeout(self, timeout):
+        pylcb.set_timeout(self.instance, timeout)
+
     def arithmetic_callback(self, cookie, error, key, value):
         self.arithmeticResult = dict(error=error, key=key, value=value)
 
+    def configuration_callback(self, config):
+        self.connecting = False
+
     def error_callback(self, error, errinfo):
         self.errorResults.append(dict(error=error, errinfo=errinfo))
+        self.connecting = False
 
     def flush_callback(self, cookie, error, server):
         if server is not None:
@@ -255,11 +301,17 @@ class Bucket(Connection):
             errMsg = "did not get store_callback"
             raise PycbException(LCB_ERROR, errMsg)
 
-        if result['error'] == LCB_SUCCESS:
+        error = result['error']
+        if error == LCB_SUCCESS:
             return True
 
         errMsg = "error storing key, %s" % pylcb.strerror(result['error'])
-        raise PycbException(result['error'], errMsg)
+        if error == LCB_KEY_EEXISTS:
+            raise PycbKeyExists(error, errMsg)
+        elif error == LCB_KEY_ENOENT:
+            raise PycbKeyNotFound(error, errMsg)
+        else:
+            raise PycbException(result['error'], errMsg)
 
     def get(self, key):
         self.getResult = None
@@ -271,7 +323,8 @@ class Bucket(Connection):
             errMsg = "did not get get_callback"
             raise PycbException(LCB_ERROR, errMsg)
 
-        if result['error'] == LCB_SUCCESS:
+        error = result['error']
+        if error == LCB_SUCCESS:
             # for compatibility with old couchbase python client,
             # do an integer conversion to strings made up only of numeric
             # digits
@@ -282,7 +335,10 @@ class Bucket(Connection):
             return result['flags'], 0, bytes
 
         errMsg = "error retrieving key, %s" % pylcb.strerror(result['error'])
-        raise PycbException(result['error'], errMsg)
+        if error == LCB_KEY_ENOENT:
+            raise PycbKeyNotFound(error, errMsg)
+        else:
+            raise PycbException(result['error'], errMsg)
 
     def delete(self, key, cas=0):
         self.removeResult = None
@@ -294,11 +350,15 @@ class Bucket(Connection):
             errMsg = "did not get remove_callback"
             raise PycbException(LCB_ERROR, errMsg)
 
-        if result['error'] == LCB_SUCCESS:
+        error = result['error']
+        if error == LCB_SUCCESS:
             return True
 
         errMsg = "error deleting key, %s" % pylcb.strerror(result['error'])
-        raise PycbException(result['error'], errMsg)
+        if error == LCB_KEY_ENOENT:
+            raise PycbKeyNotFound(error, errMsg)
+        else:
+            raise PycbException(result['error'], errMsg)
 
     def incr(self, key, amt=1, init=0, exp=0):
         return self._arithmetic(key, amt, init, exp)
@@ -316,7 +376,8 @@ class Bucket(Connection):
             errMsg = "did not get arithmetic_callback"
             raise PycbException(LCB_ERROR, errMsg)
 
-        if result['error'] == LCB_SUCCESS:
+        error = result['error']
+        if error == LCB_SUCCESS:
             return result['value']
 
         errMsg = "error incrementing/decrementing key, %s" \

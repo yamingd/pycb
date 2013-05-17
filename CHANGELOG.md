@@ -1,3 +1,7 @@
+##v0.0.5
+* Create libevent event base for our io_ops, then call it in non-blocking mode to allow timeouts when connecting to a bucket.
+* Added PycbKeyNotFound and PycbKeyExists exceptions
+
 ## V0.0.4
 * Added checks for libcouchbase calls that don't fail but also don't generate a callback.
 
