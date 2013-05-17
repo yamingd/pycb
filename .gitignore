@@ -1,0 +1,9 @@
+*.py[co]
+.ropeproject
+.tmp_
+.coverage
+.DS_Store
+pip-install.log
+build
+dist
+MANIFEST
